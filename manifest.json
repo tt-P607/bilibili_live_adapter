@@ -23,13 +23,13 @@
         "brotli>=1.1.0"
     ],
     "categories": [
-        "adapter",
-        "live"
+        "chat"
     ],
     "tags": [
         "bilibili",
         "danmaku",
         "vtb",
-        "live"
+        "live",
+        "adapter"
     ]
 }
