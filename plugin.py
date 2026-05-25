@@ -99,6 +99,13 @@ class BilibiliLiveAdapter(BaseAdapter):
 
         长连放到 ``start()`` 之后的会话循环里，由 ``BaseAdapter.start()``
         触发。
+
+        启动时会**自动清理上次进程遗留的 game_id**——如果上一次进程被强杀
+        / 异常退出，``on_adapter_unloaded`` 没机会调 ``/v2/app/end``，B 站
+        后台会保留旧 session 锁约 30 分钟，期间任何新的 ``/v2/app/start``
+        调用都会被拒绝（错误码 7002 ``房间重复游戏``）。我们在 data 目录
+        下持久化最后一次的 game_id，启动时优先调一次 ``end_app`` 释放它，
+        即便失败（旧 game_id 已经过期）也不影响新会话。
         """
 
         config = self._get_config()
@@ -114,6 +121,10 @@ class BilibiliLiveAdapter(BaseAdapter):
             timeout=float(conn.request_timeout),
         )
         self._dispatcher = BilibiliDispatcher()
+
+        # 启动时自动清理上次遗留的 game_id（防 7002）
+        await self._cleanup_stale_game_id()
+
         logger.info("B 站 Adapter 配置就绪，等待 start() 建立长连")
 
     async def on_adapter_unloaded(self) -> None:
@@ -275,6 +286,9 @@ class BilibiliLiveAdapter(BaseAdapter):
         logger.info("调用 /v2/app/start 启动应用")
         start_resp = await self._api.start_app()
         self._start_resp = start_resp
+        # 立即持久化 game_id：即便接下来进程被强杀，下次启动也能读到这个
+        # ID 调 end_app 释放，避开 7002 限流。
+        self._persist_game_id(start_resp.game_id)
         self._dispatcher.update_room_context(
             room_id=start_resp.anchor_room_id,
             anchor_uname=start_resp.anchor_uname,
@@ -341,7 +355,11 @@ class BilibiliLiveAdapter(BaseAdapter):
         self._start_resp = None
 
     async def _safe_end_app(self, game_id: str) -> None:
-        """调 ``/v2/app/end``；任何异常只记日志。"""
+        """调 ``/v2/app/end``；任何异常只记日志。
+
+        成功或失败后都会清空持久化的 last_game_id 文件——失败说明 game_id
+        已经在 B 站后台过期了，不需要再保留；成功说明已正常释放。
+        """
 
         if not game_id or self._api is None:
             return
@@ -350,6 +368,80 @@ class BilibiliLiveAdapter(BaseAdapter):
             logger.info(f"已结束 game_id={game_id}")
         except Exception as exc:
             logger.warning(f"end_app 失败 game_id={game_id}: {exc}")
+        finally:
+            self._clear_persisted_game_id()
+
+    # ── game_id 持久化（防 7002 房间重复游戏） ────────────
+
+    @staticmethod
+    def _last_game_id_path() -> str:
+        """返回 last_game_id 文件路径，按需创建父目录。"""
+
+        import os
+
+        base_dir = os.path.join(os.getcwd(), "data", "bilibili_live_adapter")
+        os.makedirs(base_dir, exist_ok=True)
+        return os.path.join(base_dir, "last_game_id.txt")
+
+    def _persist_game_id(self, game_id: str) -> None:
+        """把当前 game_id 写到磁盘。
+
+        每次 ``start_app`` 成功后立刻调用，使得即便进程被强杀，下次启动也能
+        通过这个文件读到上次未释放的 game_id。
+        """
+
+        if not game_id:
+            return
+        try:
+            with open(self._last_game_id_path(), "w", encoding="utf-8") as f:
+                f.write(game_id)
+        except OSError as exc:
+            logger.warning(f"持久化 game_id 失败（忽略，不影响主流程）: {exc}")
+
+    def _clear_persisted_game_id(self) -> None:
+        """清空持久化文件。"""
+
+        import os
+
+        path = self._last_game_id_path()
+        if os.path.exists(path):
+            try:
+                os.remove(path)
+            except OSError as exc:
+                logger.debug(f"清空持久化 game_id 失败（忽略）: {exc}")
+
+    async def _cleanup_stale_game_id(self) -> None:
+        """启动时调一次 end_app 释放上次遗留的 game_id。
+
+        失败（如旧 game_id 已经过期）不影响主流程，只清空持久化文件。
+        """
+
+        path = self._last_game_id_path()
+        try:
+            with open(path, encoding="utf-8") as f:
+                stale_game_id = f.read().strip()
+        except FileNotFoundError:
+            return  # 没有遗留，正常情况
+        except OSError as exc:
+            logger.debug(f"读取持久化 game_id 失败（忽略）: {exc}")
+            return
+
+        if not stale_game_id:
+            self._clear_persisted_game_id()
+            return
+
+        logger.info(f"检测到上次遗留的 game_id={stale_game_id}，尝试释放避免 7002")
+        try:
+            assert self._api is not None
+            await self._api.end_app(stale_game_id)
+            logger.info(f"已释放遗留 game_id={stale_game_id}")
+        except Exception as exc:
+            # 旧 game_id 通常已经过期；end_app 失败也无妨——核心目的是
+            # 触发 B 站后台释放 session 锁，过期的 game_id 调 end_app 也会
+            # 让锁被清掉。
+            logger.info(f"释放遗留 game_id 失败（可能已过期，忽略）: {exc}")
+        finally:
+            self._clear_persisted_game_id()
 
     def _auto_reconnect_enabled(self) -> bool:
         """配置开关：是否允许长连断开后自动重连。"""

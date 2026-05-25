@@ -160,7 +160,23 @@ class BilibiliClient:
             ) from exc
 
         try:
-            self._ws = await ws_client.connect(url)
+            # 关闭 websockets 库自带的 keepalive ping（默认每 20s 发 ping，
+            # 25s 超时未收到 pong 就强制关连接）。原因：
+            # 1. B 站长连协议**已经有自己的 op=2 心跳**（每 20s 一次），
+            #    不需要 ws 层的 ping/pong 也能保活；
+            # 2. 主线程被 anima_chatter / KFC 的 LLM 调用阻塞 20s+ 时，
+            #    ws ping 发不出去会触发 ``keepalive ping timeout`` 强制断
+            #    连，进而触发我们的重连逻辑，1 秒内多次调 /v2/app/start
+            #    被 B 站限流（7001 请求冷却期），陷入"断 → 限流 → 等
+            #    → 断"的循环。
+            # 关掉 ws keepalive 后只依赖应用层 op=2 心跳，主线程偶尔阻塞
+            # 不会立刻被踢，重连频率大幅下降。
+            self._ws = await ws_client.connect(
+                url,
+                ping_interval=None,
+                ping_timeout=None,
+                close_timeout=10,
+            )
         except Exception as exc:
             raise BilibiliClientError(f"WebSocket 连接失败: {exc}") from exc
 
