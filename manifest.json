@@ -1,7 +1,7 @@
 {
     "name": "bilibili_live_adapter",
     "display_name": "B 站直播弹幕适配器",
-    "version": "0.1.0",
+    "version": "0.1.1",
     "description": "B 站直播开放平台 (live-open.biliapi.com) 弹幕长连接入；只入站不出站，回应交给 anima_chatter / VTube Studio",
     "author": "MoFox Team",
     "dependencies": {
