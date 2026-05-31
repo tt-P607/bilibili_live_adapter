@@ -55,6 +55,13 @@ class BilibiliLiveAdapterConfig(BaseConfig):
             default="https://live-open.biliapi.com",
             description="API 主机域名。正式环境就是默认值，不要乱改。",
         )
+        stream_name: str = Field(
+            default="",
+            description=(
+                "聊天流（直播间）的显示名；留空则用 ``\"B 站直播间 {room_id}\"`` 兜底。"
+                "多平台同播时建议两个 adapter 填同一个值，stream 才能用统一名字。"
+            ),
+        )
 
     @config_section("connection", title="长连参数")
     class ConnectionSection(SectionBase):

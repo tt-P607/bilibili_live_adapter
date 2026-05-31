@@ -11,11 +11,14 @@
 
 设计要点：
 
-- **平台标识 ``platform = "bilibili_live"``**：要和 :class:`plugin.BilibiliLiveAdapter`
-  的 ``platform`` 类属性一致；下游 chatter 用它做平台分流。
-- **群聊视角**：把整个直播间当作"一个群"，``group_id = room_id``，群名固定为
-  ``"B 站直播间 {room_id}"``（不再使用主播昵称，因为开放平台返回的是主播账号
-  名，并不是真正的"直播间标题"）。
+- **平台标识 ``platform = "live"``**（合并 stream 后的虚拟平台名；与 douyin_live_adapter
+  对齐）：所有直播平台都标 ``"live"``，让 stream_manager 把 B 站 + 抖音弹幕归
+  入同一个 stream，由 anima_chatter 串行决策、避免两边 chatter 打架。真实来源
+  ``"bilibili_live"`` 由 ``additional_config.source_platform`` 携带，模型 prompt
+  能据此区分。
+- **群聊视角**：把"直播间"当作一个统一的虚拟群，``group_id = "live_room"``，
+  group_name 维持 ``"B 站直播间 {room_id}"`` 让模型在 stream_name 里看到真实
+  来源（必要时再读 ``additional_config.source_room_id``）。
 - **用户标识用 ``open_id``**：B 站给的脱敏 ID，跨直播间稳定，比 ``uid`` 更适合长期记忆。
   uid 只塞 ``additional_config`` 备查。
 - **不入库的事件返回 None**：``on_platform_message`` 看到 None 会自动跳过 ``core_sink.send``。
@@ -38,8 +41,19 @@ from src.kernel.logger import get_logger
 logger = get_logger("bilibili_live_adapter.dispatcher")
 
 
-# 与 :class:`plugin.BilibiliLiveAdapter.platform` 必须一致。
-PLATFORM = "bilibili_live"
+# 合并 stream 后的虚拟平台名；与 :class:`plugin.BilibiliLiveAdapter.platform`
+# 一致。把所有直播平台（B 站 / 抖音 / 未来的 YouTube 等）都标成 ``"live"``，
+# 让多平台同播时 chat_stream 共用一个，避免 chatter 打架。
+PLATFORM = "live"
+
+# 真实来源平台标识；写到 envelope 的 ``additional_config.source_platform``，
+# 让 prompt 能告诉模型这条弹幕到底来自哪。
+SOURCE_PLATFORM = "bilibili_live"
+
+# 合并后的虚拟 group_id。所有直播平台共用这一个值，使得 stream_manager 通过
+# ``SHA256(platform + "_" + group_id)`` 算出来的 stream_id 在 B 站 + 抖音之间
+# 完全一致，进入同一会话。
+LIVE_VIRTUAL_GROUP_ID = "live_room"
 
 
 # ── 已知 cmd ─────────────────────────────────────────
@@ -104,28 +118,49 @@ class BilibiliDispatcher:
     ``system_reminder``。
     """
 
-    def __init__(self, *, room_id: int = 0, anchor_uname: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        room_id: int = 0,
+        anchor_uname: str = "",
+        stream_name_override: str = "",
+    ) -> None:
         """记录 start_app 拿到的房间上下文。
 
         Args:
             room_id: 主播的真实直播间号；当作群 ID 用。
             anchor_uname: 主播昵称；保留备用（日志、bot_info 等），但不再用作群名。
+            stream_name_override: 用户自定义的 stream_name；非空时直接使用，
+                留空时回退到 ``"B 站直播间 {room_id}"`` 兜底。
         """
 
         self._room_id = int(room_id or 0)
         self._anchor_uname = str(anchor_uname or "")
+        self._stream_name_override = str(stream_name_override or "").strip()
         self._total_likes: int = 0
 
     def update_room_context(self, *, room_id: int, anchor_uname: str) -> None:
         """重连后拿到新的 ``room_id`` / ``anchor_uname`` 时调用。
 
         理论上同一个主播 room_id 不变；但鉴权重新走 start 流程后，谨慎起见
-        让外层有机会刷新。新会话开始时同时清零累计点赞数（直播分场重新计数
-        更符合直觉）。
+        让外层有机会刷新。
+
+        **注意**：这里**不**清零 ``_total_likes``——B 站长连会因网络抖动 /
+        ws keepalive timeout / LLM 阻塞等原因频繁断开重连。如果每次重连都把
+        计数清零，模型在 prompt 里看到的"累计点赞数"就只是这一段会话的值，
+        与用户期待的"从插件启动至今的累计"不符。计数重置应通过
+        :meth:`reset_total_likes` 显式调用（例如插件 unload 时）。
         """
 
         self._room_id = int(room_id or 0)
         self._anchor_uname = str(anchor_uname or "")
+
+    def reset_total_likes(self) -> None:
+        """显式清零累计点赞数。
+
+        用于插件 unload / 重启 / 用户主动重置等场景。重连本身**不应**调用此方法。
+        """
+
         self._total_likes = 0
 
     @property
@@ -224,25 +259,61 @@ class BilibiliDispatcher:
     def _apply_group(self, builder: MessageBuilder, *, room_id: int) -> None:
         """统一把直播间映射成"群"。
 
-        群名固定使用 ``"B 站直播间 {room_id}"`` —— 开放平台返回的是主播账号
-        名，并不是直播间标题，避免误导模型。
+        群名优先用配置里的 ``stream_name_override``（用户自取的舞台名）；
+        留空时回退到 ``"B 站直播间 {room_id}"`` 兜底。
+
+        多平台合并 stream 时，``StreamMgr`` 只在 stream 第一次创建时使用
+        这个名字，之后不再覆盖；所以建议两个 adapter 填同一个值，避免
+        "谁先到谁说了算"的非确定性。
         """
 
         if not room_id:
             return
+        # group_id 固定写虚拟值，使得多平台直播能并入同一 stream；
+        # 真实 room_id 通过 group name 与 additional_config 暴露。
+        name = self._stream_name_override or f"B 站直播间 {room_id}"
         builder.from_group(
-            group_id=str(room_id),
+            group_id=LIVE_VIRTUAL_GROUP_ID,
             platform=PLATFORM,
-            name=f"B 站直播间 {room_id}",
+            name=name,
         )
+
+    @staticmethod
+    def _inject_source_into_extra(envelope: MessageEnvelope, additional: dict[str, Any]) -> None:
+        """把 ``source_platform`` / ``source_room_id`` 复制到 ``message_info.extra``。
+
+        ``MessageConverter`` 只把 ``message_info.extra`` 透传到 ``Message.extra``；
+        ``additional_config`` 是平台原始字段，**不会**进入 ``Message.extra``。所以
+        这里要手动同步——保证 anima_chatter 等下游可以通过 ``msg.extra.get(...)`` 直接
+        读到来源信息，不必绕到 ``raw_message`` 或 ``additional_config``。
+        """
+
+        info = envelope.get("message_info")
+        if not isinstance(info, dict):
+            return
+        extra_obj = info.get("extra")
+        if not isinstance(extra_obj, dict):
+            extra_obj = {}
+            info["extra"] = extra_obj  # type: ignore[typeddict-unknown-key]
+        if "source_platform" in additional:
+            extra_obj["source_platform"] = additional["source_platform"]
+        if "source_room_id" in additional:
+            extra_obj["source_room_id"] = additional["source_room_id"]
 
     def _build_common_additional(self, data: dict[str, Any]) -> dict[str, Any]:
         """提取所有事件都该带的"平台共享字段"。
 
         各 ``_build_*_envelope`` 拿到这个 dict 后再补充自家专属字段。
+
+        关键字段：
+        - ``source_platform``：``"bilibili_live"``，让 anima_chatter 等下游
+          知道这条弹幕的真实来源（envelope 顶层 ``platform`` 已被合并为 ``"live"``）。
+        - ``source_room_id``：真实 B 站 room_id；group_id 已被合并为虚拟值。
         """
 
         return {
+            "source_platform": SOURCE_PLATFORM,
+            "source_room_id": int(data.get("room_id") or self._room_id or 0),
             "bilibili_uid": data.get("uid"),
             "guard_level": int(data.get("guard_level") or 0),
             "fans_medal_level": int(data.get("fans_medal_level") or 0),
@@ -311,6 +382,10 @@ class BilibiliDispatcher:
             }
         )
         envelope["message_info"]["additional_config"] = additional
+        # 同步把 source_platform 注入 message_info.extra，让核心 MessageConverter
+        # 自动透传到 ``Message.extra``——anima_chatter 等下游直接 ``msg.extra``
+        # 即可读到，而不必去翻 ``additional_config``。
+        self._inject_source_into_extra(envelope, additional)
         envelope["raw_message"] = data
 
         logger.info(
@@ -385,6 +460,7 @@ class BilibiliDispatcher:
             }
         )
         envelope["message_info"]["additional_config"] = additional
+        self._inject_source_into_extra(envelope, additional)
         envelope["raw_message"] = data
 
         logger.info(
@@ -466,6 +542,7 @@ class BilibiliDispatcher:
             }
         )
         envelope["message_info"]["additional_config"] = additional
+        self._inject_source_into_extra(envelope, additional)
         envelope["raw_message"] = data
 
         logger.info(
@@ -533,6 +610,8 @@ class BilibiliDispatcher:
 
         # 上舰事件的 fans_medal 是顶层字段（不是嵌在 user_info 里）。
         additional = {
+            "source_platform": SOURCE_PLATFORM,
+            "source_room_id": int(self._room_id or 0),
             "bilibili_uid": user_info.get("uid"),
             "guard_level": guard_level,
             "fans_medal_level": int(data.get("fans_medal_level") or 0),
@@ -543,6 +622,7 @@ class BilibiliDispatcher:
             "guard_unit": guard_unit,
         }
         envelope["message_info"]["additional_config"] = additional
+        self._inject_source_into_extra(envelope, additional)
         envelope["raw_message"] = data
 
         logger.info(
@@ -585,5 +665,7 @@ __all__ = [
     "CMD_GUARD",
     "CMD_LIKE",
     "CMD_SUPER_CHAT",
+    "LIVE_VIRTUAL_GROUP_ID",
     "PLATFORM",
+    "SOURCE_PLATFORM",
 ]

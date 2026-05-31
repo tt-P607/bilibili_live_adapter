@@ -56,6 +56,10 @@ class BilibiliLiveAdapter(BaseAdapter):
     )
     platform = PLATFORM
 
+    # 真实来源平台标识；anima_chatter 等下游通过这个属性拿到本 adapter 真实
+    # 投递的源平台（platform 已经被合并为统一虚拟值 ``"live"``）。
+    source_platform = "bilibili_live"
+
     run_in_subprocess = False
 
     def __init__(
@@ -136,7 +140,9 @@ class BilibiliLiveAdapter(BaseAdapter):
             id_code=bili.id_code,
             timeout=float(conn.request_timeout),
         )
-        self._dispatcher = BilibiliDispatcher()
+        self._dispatcher = BilibiliDispatcher(
+            stream_name_override=bili.stream_name,
+        )
 
         # 启动时自动清理上次遗留的 game_id（防 7002）
         await self._cleanup_stale_game_id()
