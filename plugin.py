@@ -20,15 +20,26 @@ from typing import Any, cast
 
 from mofox_wire import CoreSink, MessageEnvelope
 
+from src.app.plugin_system.api import prompt_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base import BaseAdapter, BasePlugin
 from src.core.components.loader import register_plugin
+from src.core.prompt import SystemReminderBucket, SystemReminderInsertType
 from src.kernel.concurrency import get_task_manager
 
 from .config import BilibiliLiveAdapterConfig
 from .src.api import BilibiliApi, BilibiliApiError, StartResponse
 from .src.client import BilibiliClient, BilibiliClientError
 from .src.dispatcher import PLATFORM, BilibiliDispatcher
+
+
+# 直播间状态 system_reminder 名称（点赞数等运行时信息汇总到这一条）。
+_LIKES_REMINDER_NAME = "bilibili_live_room_status"
+
+# 点赞计数刷新间隔（秒）。B 站每秒推一次 LIKE 事件，但模型 prompt 不需要
+# 实时刷新——3 秒一刷既能让模型看到接近实时的点赞数，又能避免 reminder
+# store 频繁写入。
+_LIKES_REFRESH_INTERVAL = 3.0
 
 
 logger = get_logger("bilibili_live_adapter")
@@ -72,6 +83,11 @@ class BilibiliLiveAdapter(BaseAdapter):
 
         # 重连指数退避状态
         self._consecutive_failures: int = 0
+
+        # 直播间状态 reminder 刷新任务（周期性把 dispatcher.total_likes 写到
+        # system_reminder.actor，模型在 prompt 里看到当前点赞数）
+        self._likes_reminder_task_info: Any | None = None
+        self._last_published_likes: int = -1
 
     # ── 配置读取 ──────────────────────────────────────
 
@@ -151,11 +167,17 @@ class BilibiliLiveAdapter(BaseAdapter):
 
         self._stopping = False
         self._consecutive_failures = 0
+        self._last_published_likes = -1
 
         tm = get_task_manager()
         self._session_task_info = tm.create_task(
             self._session_loop(),
             name="bilibili_live_adapter.session",
+            daemon=True,
+        )
+        self._likes_reminder_task_info = tm.create_task(
+            self._likes_reminder_loop(),
+            name="bilibili_live_adapter.likes_reminder",
             daemon=True,
         )
 
@@ -164,6 +186,8 @@ class BilibiliLiveAdapter(BaseAdapter):
 
         self._stopping = True
         await self._stop_session(end_app=True)
+        self._cancel_likes_reminder_task()
+        self._clear_likes_reminder()
         await super().stop()
 
     # ── 健康检查（重写：不要看 self._ws） ─────────────
@@ -468,6 +492,95 @@ class BilibiliLiveAdapter(BaseAdapter):
             await asyncio.sleep(delay)
         except asyncio.CancelledError:
             raise
+
+    # ── 直播间状态 system_reminder ───────────────────
+
+    async def _likes_reminder_loop(self) -> None:
+        """周期性把 dispatcher 累计的点赞数刷到 system_reminder.actor。
+
+        模型在 prompt 里看到的 ``[bilibili_live_room_status]`` 块由 chatter
+        的 ``with_reminder="actor"`` 自动注入。本任务每 ``_LIKES_REFRESH_INTERVAL``
+        秒读一次 ``dispatcher.total_likes``，仅当数值或上下文变化时才写入
+        store（避免无意义抖动）。
+        """
+
+        try:
+            while not self._stopping:
+                try:
+                    await asyncio.sleep(_LIKES_REFRESH_INTERVAL)
+                except asyncio.CancelledError:
+                    raise
+                if self._stopping:
+                    break
+                self._publish_likes_reminder()
+        except asyncio.CancelledError:
+            return
+        except Exception as exc:
+            logger.warning(f"likes_reminder 循环异常退出: {exc}")
+
+    def _publish_likes_reminder(self) -> None:
+        """把当前点赞数 + 直播间号写到 system_reminder.actor。
+
+        - dispatcher 未就绪 / 还没建立会话 → 跳过。
+        - 数值与上次相同 → 跳过（避免 store 内容反复刷写产生日志噪音）。
+        """
+
+        dispatcher = self._dispatcher
+        if dispatcher is None:
+            return
+        likes = dispatcher.total_likes
+        room_id = dispatcher.room_id
+        if likes == self._last_published_likes:
+            return
+
+        if room_id:
+            content = (
+                f"当前直播间号 {room_id}，"
+                f"本次开播至今观众已累计点赞 {likes} 次。"
+            )
+        else:
+            content = f"本次开播至今观众已累计点赞 {likes} 次。"
+
+        try:
+            prompt_api.add_system_reminder(
+                bucket=SystemReminderBucket.ACTOR,
+                name=_LIKES_REMINDER_NAME,
+                content=content,
+                insert_type=SystemReminderInsertType.DYNAMIC,
+            )
+        except Exception as exc:
+            logger.debug(f"写入 likes reminder 失败（忽略）: {exc}")
+            return
+        self._last_published_likes = likes
+
+    def _cancel_likes_reminder_task(self) -> None:
+        """取消周期性的 reminder 刷新任务（stop 时调）。"""
+
+        if self._likes_reminder_task_info is None:
+            return
+        tm = get_task_manager()
+        try:
+            tm.cancel_task(self._likes_reminder_task_info.task_id)
+        except Exception:
+            pass
+        self._likes_reminder_task_info = None
+
+    def _clear_likes_reminder(self) -> None:
+        """卸载时把 system_reminder 里的状态条目清掉，避免下次启动残留。"""
+
+        try:
+            store = self._get_system_reminder_store()
+            store.delete(SystemReminderBucket.ACTOR, _LIKES_REMINDER_NAME)
+        except Exception as exc:
+            logger.debug(f"清理 likes reminder 失败（忽略）: {exc}")
+
+    @staticmethod
+    def _get_system_reminder_store():  # noqa: ANN205 - 内部辅助
+        """延迟拿 store 实例，避免启动早于 prompt 子系统初始化时报错。"""
+
+        from src.core.prompt import get_system_reminder_store
+
+        return get_system_reminder_store()
 
 
 @register_plugin
