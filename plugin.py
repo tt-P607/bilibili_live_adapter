@@ -112,6 +112,14 @@ class BilibiliLiveAdapter(BaseAdapter):
             raise RuntimeError(f"B 站凭证未填写：app_id 必须为正整数（当前 {bili.app_id}）")
         return config
 
+    def _is_plugin_enabled(self) -> bool:
+        """读取 ``[plugin].enabled`` 开关；缺配置时视为"未启用"。"""
+
+        if self.plugin is None or self.plugin.config is None:
+            return False
+        config = cast(BilibiliLiveAdapterConfig, self.plugin.config)
+        return bool(config.plugin.enabled)
+
     # ── 生命周期 ──────────────────────────────────────
 
     async def on_adapter_loaded(self) -> None:
@@ -126,7 +134,14 @@ class BilibiliLiveAdapter(BaseAdapter):
         调用都会被拒绝（错误码 7002 ``房间重复游戏``）。我们在 data 目录
         下持久化最后一次的 game_id，启动时优先调一次 ``end_app`` 释放它，
         即便失败（旧 game_id 已经过期）也不影响新会话。
+
+        若 ``[plugin].enabled = false``，本钩子直接 no-op：不读凭证、不构造
+        HTTP/dispatcher，等价于"框架知道这个插件存在，但它什么都不做"。
         """
+
+        if not self._is_plugin_enabled():
+            logger.info("[plugin].enabled = false，B 站 Adapter 已禁用（不会建立长连）")
+            return
 
         config = self._get_config()
         bili = config.bilibili
@@ -165,11 +180,18 @@ class BilibiliLiveAdapter(BaseAdapter):
         logger.info("B 站 Adapter 已卸载")
 
     async def start(self) -> None:
-        """启动 BaseAdapter 公共流程 + 自管会话循环。"""
+        """启动 BaseAdapter 公共流程 + 自管会话循环。
+
+        ``[plugin].enabled = false`` 时只走基类启动流程，不启动会话/reminder
+        任务——adapter 仍然在 ``adapter_manager`` 里登记，但不消耗 WS 资源。
+        """
 
         # 注意：BaseAdapter.start() 自己会调 on_adapter_loaded()。所以这里
         # 调用 super().start() 就够了。不要在这里再调一次 on_adapter_loaded()。
         await super().start()
+
+        if not self._is_plugin_enabled():
+            return
 
         self._stopping = False
         self._consecutive_failures = 0

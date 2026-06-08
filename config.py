@@ -24,6 +24,20 @@ class BilibiliLiveAdapterConfig(BaseConfig):
         "bilibili_live_adapter 插件配置（开放平台凭证 + 长连参数）"
     )
 
+    @config_section("plugin", title="插件总开关")
+    class PluginSection(SectionBase):
+        """插件级开关。
+
+        关闭后插件本身仍然会被框架加载（adapter 也会被注册），但不会去调
+        ``/v2/app/start``、不会建立 WebSocket 长连——相当于"占位但不工作"。
+        想完全卸载请改 ``manifest.json`` 或移除插件目录。
+        """
+
+        enabled: bool = Field(
+            default=True,
+            description="是否启用本插件的长连功能；关闭后不会建立任何 B 站直播 WS 长连",
+        )
+
     @config_section("bilibili", title="B 站开放平台凭证")
     class BilibiliSection(SectionBase):
         """开放平台凭证 + 主播身份码。
@@ -99,6 +113,7 @@ class BilibiliLiveAdapterConfig(BaseConfig):
             description="HTTP 请求超时（秒）",
         )
 
+    plugin: PluginSection = Field(default_factory=PluginSection)
     bilibili: BilibiliSection = Field(default_factory=BilibiliSection)
     connection: ConnectionSection = Field(default_factory=ConnectionSection)
 
