@@ -299,6 +299,8 @@ class BilibiliDispatcher:
             extra_obj["source_platform"] = additional["source_platform"]
         if "source_room_id" in additional:
             extra_obj["source_room_id"] = additional["source_room_id"]
+        if "avatar_url" in additional:
+            extra_obj["avatar_url"] = additional["avatar_url"]
 
     def _build_common_additional(self, data: dict[str, Any]) -> dict[str, Any]:
         """提取所有事件都该带的"平台共享字段"。
@@ -309,6 +311,7 @@ class BilibiliDispatcher:
         - ``source_platform``：``"bilibili_live"``，让 anima_chatter 等下游
           知道这条弹幕的真实来源（envelope 顶层 ``platform`` 已被合并为 ``"live"``）。
         - ``source_room_id``：真实 B 站 room_id；group_id 已被合并为虚拟值。
+        - ``avatar_url``：发送者头像 URL（``uface``），供弹幕悬浮窗等下游渲染。
         """
 
         return {
@@ -318,6 +321,7 @@ class BilibiliDispatcher:
             "guard_level": int(data.get("guard_level") or 0),
             "fans_medal_level": int(data.get("fans_medal_level") or 0),
             "fans_medal_name": str(data.get("fans_medal_name") or ""),
+            "avatar_url": str(data.get("uface") or ""),
         }
 
     # ── DM 弹幕 ──────────────────────────────────────

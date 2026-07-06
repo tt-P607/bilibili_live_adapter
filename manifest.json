@@ -1,7 +1,7 @@
 {
     "name": "bilibili_live_adapter",
     "display_name": "B 站直播弹幕适配器",
-    "version": "0.1.4",
+    "version": "0.1.5",
     "description": "B 站直播开放平台 (live-open.biliapi.com) 弹幕长连接入；只入站不出站，回应交给 anima_chatter / VTube Studio",
     "author": "言柒",
     "dependencies": {
@@ -12,6 +12,11 @@
         {
             "component_type": "adapter",
             "component_name": "bilibili_live_adapter",
+            "dependencies": []
+        },
+        {
+            "component_type": "command",
+            "component_name": "B站",
             "dependencies": []
         }
     ],

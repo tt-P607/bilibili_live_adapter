@@ -406,6 +406,48 @@ class BilibiliLiveAdapter(BaseAdapter):
         self._client = None
         self._start_resp = None
 
+    async def force_reconnect(self) -> bool:
+        """强制断开当前长连并重启会话循环（不重启 bot）。
+
+        供 ``/bili reconnect`` 命令调用。用于长连进入异常静默态、或需要重新
+        ``start_app`` 拿新 game_id 重建会话的场景：停掉当前 client、调
+        ``end_app`` 释放旧 game_id、复位 ``_stopping``，再重新拉起会话循环
+        ——下一轮会重新 ``start_app`` 并建立长连。
+
+        Returns:
+            ``True`` 表示已触发重连；``False`` 表示适配器处于禁用状态
+            （``[plugin].enabled = false``），未做任何操作。
+        """
+
+        if not self._is_plugin_enabled():
+            logger.info("[plugin].enabled = false，忽略 force_reconnect 请求")
+            return False
+
+        logger.info("收到强制重连请求：停止当前会话并重启会话循环")
+
+        # 1) 停掉当前 client + 会话循环任务，并 end_app 释放旧 game_id
+        #    （下一轮会用新的 game_id，旧的不再有用）。
+        await self._stop_session(end_app=True)
+
+        # 2) 复位停止标志 + 失败计数。
+        self._stopping = False
+        self._consecutive_failures = 0
+
+        # 3) 重新拉起会话循环（reminder 循环若已在跑则复用，不重复创建）。
+        tm = get_task_manager()
+        self._session_task_info = tm.create_task(
+            self._session_loop(),
+            name="bilibili_live_adapter.session",
+            daemon=True,
+        )
+        if self._likes_reminder_task_info is None:
+            self._likes_reminder_task_info = tm.create_task(
+                self._likes_reminder_loop(),
+                name="bilibili_live_adapter.likes_reminder",
+                daemon=True,
+            )
+        return True
+
     async def _safe_end_app(self, game_id: str) -> None:
         """调 ``/v2/app/end``；任何异常只记日志。
 
@@ -624,7 +666,9 @@ class BilibiliLiveAdapterPlugin(BasePlugin):
     def get_components(self) -> list[type]:
         """返回插件内所有组件类。"""
 
-        return [BilibiliLiveAdapter]
+        from .commands import BilibiliCommand
+
+        return [BilibiliLiveAdapter, BilibiliCommand]
 
 
 __all__ = [
