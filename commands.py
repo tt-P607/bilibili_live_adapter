@@ -38,8 +38,8 @@ class BilibiliCommand(BaseCommand):
     ``reconnect``。即 ``/B站 重连`` 与 ``/B站 reconnect`` 等价。
     """
 
-    command_name: str = "B站"
-    command_description: str = (
+    name: str = "B站"
+    description: str = (
         "B 站直播适配器运维控制：重连=强制断开并重连长连"
         "（用于长连静默或需要重建会话时手动接上，无需重启 bot）。"
     )

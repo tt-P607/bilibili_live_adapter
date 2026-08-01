@@ -48,10 +48,10 @@ logger = get_logger("bilibili_live_adapter")
 class BilibiliLiveAdapter(BaseAdapter):
     """B 站直播弹幕入站适配器。"""
 
-    adapter_name = "bilibili_live_adapter"
+    name = "bilibili_live_adapter"
     adapter_version = "0.1.0"
     adapter_author = "MoFox Team"
-    adapter_description = (
+    description = (
         "B 站直播开放平台弹幕入站适配器（只入不出，回应交给 anima_chatter）"
     )
     platform = PLATFORM
@@ -658,7 +658,6 @@ class BilibiliLiveAdapterPlugin(BasePlugin):
     """B 站直播弹幕适配器插件。"""
 
     plugin_name = "bilibili_live_adapter"
-    plugin_version = "0.1.0"
     plugin_author = "MoFox Team"
     plugin_description = "B 站直播开放平台弹幕入站适配器（基于 Neo-MoFox）"
     configs = [BilibiliLiveAdapterConfig]

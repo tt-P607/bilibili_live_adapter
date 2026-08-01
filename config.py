@@ -19,8 +19,8 @@ from src.core.components.base.config import BaseConfig, Field, SectionBase, conf
 class BilibiliLiveAdapterConfig(BaseConfig):
     """B 站直播弹幕 Adapter 配置。"""
 
-    config_name: ClassVar[str] = "config"
-    config_description: ClassVar[str] = (
+    name: ClassVar[str] = "config"
+    description: ClassVar[str] = (
         "bilibili_live_adapter 插件配置（开放平台凭证 + 长连参数）"
     )
 
