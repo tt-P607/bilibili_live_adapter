@@ -1,42 +1,46 @@
 {
-    "name": "bilibili_live_adapter",
-    "api_version": {"adapter_api": "1.0.0", "log_api": "1.0.0", "prompt_api": "1.0.0", "send_api": "1.0.0"},
-
-    "display_name": "B 站直播弹幕适配器",
-    "version": "1.0.1",
-    "description": "B 站直播开放平台 (live-open.biliapi.com) 弹幕长连接入；只入站不出站，回应交给 anima_chatter / VTube Studio",
-    "author": "言柒",
-    "dependencies": {
-        "plugins": [],
-        "components": []
+  "name": "bilibili_live_adapter",
+  "api_version": {
+    "adapter_api": "1.0.0",
+    "log_api": "1.0.0",
+    "prompt_api": "1.0.0",
+    "send_api": "1.0.0"
+  },
+  "display_name": "B 站直播弹幕适配器",
+  "version": "1.0.2",
+  "description": "B 站直播开放平台 (live-open.biliapi.com) 弹幕长连接入；只入站不出站，回应交给 anima_chatter / VTube Studio",
+  "author": "言柒",
+  "dependencies": {
+    "plugins": [],
+    "components": []
+  },
+  "include": [
+    {
+      "component_type": "adapter",
+      "component_name": "bilibili_live_adapter",
+      "dependencies": []
     },
-    "include": [
-        {
-            "component_type": "adapter",
-            "component_name": "bilibili_live_adapter",
-            "dependencies": []
-        },
-        {
-            "component_type": "command",
-            "component_name": "B站",
-            "dependencies": []
-        }
-    ],
-    "entry_point": "plugin.py",
-    "min_core_version": "1.2.0-alpha",
-    "python_dependencies": [
-        "websockets>=12.0",
-        "httpx>=0.27.0",
-        "brotli>=1.1.0"
-    ],
-    "categories": [
-        "chat"
-    ],
-    "tags": [
-        "bilibili",
-        "danmaku",
-        "vtb",
-        "live",
-        "adapter"
-    ]
+    {
+      "component_type": "command",
+      "component_name": "B站",
+      "dependencies": []
+    }
+  ],
+  "entry_point": "plugin.py",
+  "min_core_version": "1.2.0-alpha",
+  "python_dependencies": [
+    "websockets>=12.0",
+    "httpx>=0.27.0",
+    "brotli>=1.1.0"
+  ],
+  "categories": [
+    "chat"
+  ],
+  "tags": [
+    "bilibili",
+    "danmaku",
+    "vtb",
+    "live",
+    "adapter"
+  ]
 }

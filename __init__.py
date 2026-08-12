@@ -4,5 +4,4 @@
 进 Neo-MoFox 核心；回应交给 anima_chatter / VTube Studio。
 """
 
-__version__ = "0.1.0"
 __author__ = "MoFox Team"

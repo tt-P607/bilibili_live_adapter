@@ -49,7 +49,6 @@ class BilibiliLiveAdapter(BaseAdapter):
     """B 站直播弹幕入站适配器。"""
 
     name = "bilibili_live_adapter"
-    adapter_version = "0.1.0"
     adapter_author = "MoFox Team"
     description = (
         "B 站直播开放平台弹幕入站适配器（只入不出，回应交给 anima_chatter）"
@@ -658,8 +657,6 @@ class BilibiliLiveAdapterPlugin(BasePlugin):
     """B 站直播弹幕适配器插件。"""
 
     plugin_name = "bilibili_live_adapter"
-    plugin_author = "MoFox Team"
-    plugin_description = "B 站直播开放平台弹幕入站适配器（基于 Neo-MoFox）"
     configs = [BilibiliLiveAdapterConfig]
 
     def get_components(self) -> list[type]:
