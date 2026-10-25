@@ -24,6 +24,7 @@ from src.app.plugin_system.api import prompt_api
 from src.app.plugin_system.api.log_api import get_logger
 from src.core.components.base import BaseAdapter, BasePlugin
 from src.core.components.loader import register_plugin
+from src.core.components.types import PlatformSendResult, PlatformSendStatus
 from src.core.prompt import SystemReminderBucket, SystemReminderInsertType
 from src.kernel.concurrency import get_task_manager
 
@@ -31,7 +32,6 @@ from .config import BilibiliLiveAdapterConfig
 from .src.api import BilibiliApi, BilibiliApiError, StartResponse
 from .src.client import BilibiliClient, BilibiliClientError
 from .src.dispatcher import PLATFORM, BilibiliDispatcher
-
 
 # 直播间状态 system_reminder 名称（点赞数等运行时信息汇总到这一条）。
 _LIKES_REMINDER_NAME = "bilibili_live_room_status"
@@ -249,7 +249,7 @@ class BilibiliLiveAdapter(BaseAdapter):
 
     # ── 出站：no-op ───────────────────────────────────
 
-    async def _send_platform_message(self, envelope: MessageEnvelope) -> None:  # type: ignore[override]
+    async def _send_platform_message(self, envelope: MessageEnvelope) -> PlatformSendResult:  # type: ignore[override]
         """B 站不允许第三方 bot 发弹幕，整体丢弃出站。"""
 
         # 仅在 debug 级日志，避免每条核心回复都刷一行 warn。
@@ -260,6 +260,11 @@ class BilibiliLiveAdapter(BaseAdapter):
         else:
             snippet = ""
         logger.debug(f"忽略 B 站出站消息（平台不允许 bot 发弹幕）: {snippet}")
+        return PlatformSendResult(
+            success=False,
+            status=PlatformSendStatus.FAILED,
+            error="B 站直播适配器仅支持入站，不支持发送弹幕",
+        )
 
     # ── 入站：被基类 on_platform_message 调用 ────────
 
